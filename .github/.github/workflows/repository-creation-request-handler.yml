@@ -1,6 +1,7 @@
 name: DEBUG ISSUE
 
 on:
+  push:
   issues:
     types: [opened]
 

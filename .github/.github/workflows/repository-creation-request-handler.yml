@@ -2,6 +2,8 @@ name: DEBUG ISSUE
 
 on:
   push:
+    branches:
+      - main
   issues:
     types: [opened]
 

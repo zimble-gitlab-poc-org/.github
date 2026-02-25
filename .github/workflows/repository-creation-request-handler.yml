@@ -1,8 +1,8 @@
-name: Repository Creation Processor
+name: Repository Provisioning
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened, edited, reopened]
 
 permissions:
   contents: write
@@ -11,22 +11,31 @@ permissions:
 
 jobs:
 
-  parse_and_validate:
+  process:
     if: >
       contains(github.event.issue.labels.*.name, 'repo-creation-request') &&
       startsWith(github.event.issue.title, '[REPO-CREATION-REQUEST]')
     runs-on: ubuntu-latest
     outputs:
-      repo_name: ${{ steps.parse.outputs.repo_name }}
-      visibility: ${{ steps.parse.outputs.visibility }}
-      description: ${{ steps.parse.outputs.description }}
-      parse_status: ${{ steps.parse.outputs.status }}
+      result: ${{ steps.logic.outputs.result }}
+      message: ${{ steps.logic.outputs.message }}
+      repo_url: ${{ steps.logic.outputs.repo_url }}
 
     steps:
-      - name: Parse Issue
-        id: parse
+
+      # 🔐 Generate GitHub App Token
+      - uses: tibdex/github-app-token@v2
+        id: app-token
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      # 🧠 All Logic In One Deterministic Step
+      - name: Process Request
+        id: logic
         uses: actions/github-script@v7
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const core = require('@actions/core');
             const body = context.payload.issue.body;
@@ -46,14 +55,14 @@ jobs:
               const visibilityRaw = extract("Repository Visibility");
 
               if (!product || !aspect || !name || !description || !visibilityRaw) {
-                core.setOutput("status", "PARSE_ERROR");
-                core.setFailed("Missing required fields.");
+                core.setOutput("result", "PARSE_ERROR");
+                core.setOutput("message", "Missing required fields.");
                 return;
               }
 
               if (!/^[a-z0-9-]+$/.test(name)) {
-                core.setOutput("status", "PARSE_ERROR");
-                core.setFailed("Repository name must be kebab-case.");
+                core.setOutput("result", "PARSE_ERROR");
+                core.setOutput("message", "Repository name must be kebab-case.");
                 return;
               }
 
@@ -61,146 +70,78 @@ jobs:
                 ? `${product}-${aspect}-${name}-${tenant}`
                 : `${product}-${aspect}-${name}`;
 
-              const visibility = visibilityRaw.includes("Private")
-                ? "private"
-                : "internal";
+              // 🔍 Check duplicate
+              try {
+                await github.rest.repos.get({
+                  owner: context.repo.owner,
+                  repo: finalName
+                });
 
-              core.setOutput("repo_name", finalName);
-              core.setOutput("visibility", visibility);
-              core.setOutput("description", description);
-              core.setOutput("status", "OK");
+                core.setOutput("result", "DUPLICATE");
+                core.setOutput("message", "Repository already exists.");
+                return;
 
-            } catch (err) {
-              core.setOutput("status", "PARSE_ERROR");
-              core.setFailed(err.message);
-            }
+              } catch {}
 
-  check_duplicate:
-    needs: parse_and_validate
-    if: needs.parse_and_validate.outputs.parse_status == 'OK'
-    runs-on: ubuntu-latest
-    outputs:
-      duplicate_status: ${{ steps.check.outputs.status }}
-
-    steps:
-      - name: Check Repo Exists
-        id: check
-        uses: actions/github-script@v7
-        with:
-          script: |
-            try {
-              await github.rest.repos.get({
-                owner: context.repo.owner,
-                repo: "${{ needs.parse_and_validate.outputs.repo_name }}"
-              });
-              core.setOutput("status", "DUPLICATE");
-            } catch {
-              core.setOutput("status", "NOT_FOUND");
-            }
-
-  create_repository:
-    needs: check_duplicate
-    if: needs.check_duplicate.outputs.duplicate_status == 'NOT_FOUND'
-    runs-on: ubuntu-latest
-    outputs:
-      creation_status: ${{ steps.create.outputs.status }}
-
-    steps:
-      - name: Create Repo
-        id: create
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.ORG_ADMIN_TOKEN }}
-          script: |
-            try {
+              // 🚀 Create repo
               const repo = await github.rest.repos.createInOrg({
                 org: context.repo.owner,
-                name: "${{ needs.parse_and_validate.outputs.repo_name }}",
-                description: "${{ needs.parse_and_validate.outputs.description }}",
-                visibility: "${{ needs.parse_and_validate.outputs.visibility }}",
+                name: finalName,
+                description,
+                visibility: visibilityRaw.includes("Private") ? "private" : "internal",
                 auto_init: true
               });
 
-              core.setOutput("status", "CREATED");
-              core.setOutput("url", repo.data.html_url);
+              core.setOutput("result", "SUCCESS");
+              core.setOutput("repo_url", repo.data.html_url);
+              core.setOutput("message", "Repository created successfully.");
+
             } catch (err) {
-              core.setOutput("status", "CREATION_ERROR");
-              core.setFailed(err.message);
+              core.setOutput("result", "ERROR");
+              core.setOutput("message", err.message);
             }
 
-  success_handler:
-    needs: create_repository
-    if: needs.create_repository.outputs.creation_status == 'CREATED'
+  finalize:
+    needs: process
     runs-on: ubuntu-latest
+
     steps:
-      - name: Comment & Close Issue
+      - name: Comment & Close if needed
         uses: actions/github-script@v7
         with:
           script: |
-            const url = "${{ needs.create_repository.outputs.url }}";
+            const result = "${{ needs.process.outputs.result }}";
+            const message = "${{ needs.process.outputs.message }}";
+            const url = "${{ needs.process.outputs.repo_url }}";
+
+            let body = "";
+
+            switch(result) {
+              case "SUCCESS":
+                body = `✅ ${message}\n\n🔗 ${url}`;
+                break;
+              case "DUPLICATE":
+                body = `❌ ${message}`;
+                break;
+              case "PARSE_ERROR":
+                body = `❌ ${message}\n\nPlease edit the issue and correct it.`;
+                break;
+              default:
+                body = `❌ Unexpected error: ${message}`;
+            }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `✅ Repository created successfully: ${url}`
+              body
             });
 
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              state: "closed"
-            });
-
-  handle_duplicate:
-    needs: check_duplicate
-    if: needs.check_duplicate.outputs.duplicate_status == 'DUPLICATE'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "❌ Repository already exists."
-            });
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              state: "closed"
-            });
-
-  handle_parse_error:
-    needs: parse_and_validate
-    if: failure() && needs.parse_and_validate.outputs.parse_status == 'PARSE_ERROR'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "❌ Issue parsing/validation failed. Please correct and edit the issue."
-            });
-
-  notify_user:
-    needs: success_handler
-    if: success()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Send Email
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: Repository Created
-          body: Repository has been successfully created.
-          to: ${{ github.event.issue.user.email }}
-          from: Platform Team
+            if (result === "SUCCESS" || result === "DUPLICATE") {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                state: "closed"
+              });
+            }

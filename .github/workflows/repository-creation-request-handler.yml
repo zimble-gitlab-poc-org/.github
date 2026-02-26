@@ -12,6 +12,7 @@ jobs:
 
   process:
     if: >
+      github.event.issue.state == 'open' &&
       contains(github.event.issue.labels.*.name, 'repo-creation-request') &&
       startsWith(github.event.issue.title, '[REPO-CREATION-REQUEST]')
     runs-on: ubuntu-latest

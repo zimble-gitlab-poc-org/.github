@@ -38,6 +38,9 @@ jobs:
           script: |
             const body = context.payload.issue.body;
 
+            console.log("----- Repository Provisioning Started -----");
+            console.log("Issue:", context.issue.number);
+
             function extract(label) {
               const regex = new RegExp(`### ${label}\\s+([\\s\\S]*?)(?=\\n###|$)`);
               const match = body.match(regex);
@@ -49,42 +52,60 @@ jobs:
               const aspect = extract("Aspect / Domain");
               const name = extract("Repository Name");
               let tenant = extract("Tenant Name \\(Optional\\)");
+
               if (!tenant || tenant === "_No response_") {
                 tenant = null;
               }
+
               const description = extract("Repository Description");
               const visibilityRaw = extract("Repository Visibility");
 
               if (!product || !aspect || !name || !description || !visibilityRaw) {
-                core.setOutput("status", "PARSE_ERROR");
-                core.setOutput("message", "Missing required fields.");
-                return;
+                return {
+                  status: "PARSE_ERROR",
+                  message: "Missing required fields."
+                };
               }
 
               if (!/^[a-z0-9-]+$/.test(name)) {
-                core.setOutput("status", "PARSE_ERROR");
-                core.setOutput("message", "Repository name must be kebab-case.");
-                return;
+                return {
+                  status: "PARSE_ERROR",
+                  message: "Repository name must be kebab-case."
+                };
               }
 
               const finalName = tenant
                 ? `${product}-${aspect}-${name}-${tenant}`
                 : `${product}-${aspect}-${name}`;
 
-              // 🔍 Check duplicate
+              console.log("Checking duplicate for:", finalName);
+
               try {
                 await github.rest.repos.get({
                   owner: context.repo.owner,
                   repo: finalName
                 });
 
-                core.setOutput("status", "DUPLICATE");
-                core.setOutput("message", "Repository already exists.");
-                return;
+                return {
+                  status: "DUPLICATE",
+                  message: "Repository already exists."
+                };
 
-              } catch {}
+              } catch (duplicateCheckError) {
 
-              // 🚀 Create repo
+                if (duplicateCheckError.status === 404) {
+                  console.log("No duplicate found.");
+                } else {
+                  console.error("Duplicate check failed:", duplicateCheckError.message);
+                  return {
+                    status: "ERROR",
+                    message: `Duplicate verification failed: ${duplicateCheckError.message}`
+                  };
+                }
+              }
+
+              console.log("Creating repository:", finalName);
+
               const repo = await github.rest.repos.createInOrg({
                 org: context.repo.owner,
                 name: finalName,
@@ -93,14 +114,21 @@ jobs:
                 auto_init: true
               });
 
-              core.setOutput("status", "SUCCESS");
-              console.log("SETTING RESULT TO SUCCESS");
-              core.setOutput("repo_url", repo.data.html_url);
-              core.setOutput("message", "Repository created successfully.");
+              console.log("Repository created:", repo.data.html_url);
 
-            } catch (err) {
-              core.setOutput("status", "ERROR");
-              core.setOutput("message", err.message);
+              return {
+                status: "SUCCESS",
+                message: "Repository created successfully.",
+                repo_url: repo.data.html_url
+              };
+
+            } catch (unhandledError) {
+              console.error("Unhandled error:", unhandledError.message);
+
+              return {
+                status: "ERROR",
+                message: unhandledError.message
+              };
             }
 
   finalize:

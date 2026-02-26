@@ -109,8 +109,7 @@ jobs:
 
               if (
                 repositoryOptionsRaw &&
-                repositoryOptionsRaw !== "_No response_" &&
-                repositoryOptionsRaw.includes("Initialize repository with README")
+                repositoryOptionsRaw.includes("- [x] Initialize repository with README")
               ) {
                 autoInit = true;
               }

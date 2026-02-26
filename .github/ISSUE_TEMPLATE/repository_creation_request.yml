@@ -86,6 +86,14 @@ body:
         - label: Security review required
         - label: Infra provisioning required
 
+  - type: checkboxes
+    id: repository_options
+    attributes:
+      label: Repository Options (Optional)
+      description: Select additional repository options
+      options:
+        - label: Initialize repository with README (auto_init)
+
   - type: dropdown
     id: visibility
     attributes:

@@ -103,6 +103,20 @@ jobs:
                 }
               }
 
+              const repositoryOptionsRaw = extract("Repository Options \\(Optional\\)");
+
+              let autoInit = false;
+
+              if (
+                repositoryOptionsRaw &&
+                repositoryOptionsRaw !== "_No response_" &&
+                repositoryOptionsRaw.includes("Initialize repository with README")
+              ) {
+                autoInit = true;
+              }
+
+              console.log("Auto init:", autoInit);
+
               console.log("Creating repository:", finalName);
 
               const repo = await github.rest.repos.createInOrg({
@@ -110,7 +124,7 @@ jobs:
                 name: finalName,
                 description,
                 visibility: visibilityRaw.includes("Private") ? "private" : "internal",
-                auto_init: true
+                auto_init: autoInit
               });
 
               console.log("Repository created:", repo.data.html_url);
